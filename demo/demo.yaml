@@ -1,0 +1,225 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    name: demo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: somesecret
+  namespace: demo
+type: Opaque
+data:
+  username: dmlsbml1c3BocA==
+  password: c2VjcmV0cGFzc3dvcmQxMjM=
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: demo
+data:
+  nginx.conf: |
+    user  nginx;
+    worker_processes  1;
+
+    error_log  /var/log/nginx/error.log warn;
+    pid        /var/run/nginx.pid;
+
+
+    events {
+        worker_connections  1024;
+    }
+
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log  /var/log/nginx/access.log  main;
+
+        sendfile        on;
+
+        keepalive_timeout  65;
+
+        # Pass through forwarded information
+        map $http_x_forwarded_for $pass_addr {
+           default $http_x_forwarded_for;
+           ''      $remote_addr;
+        }
+        map $http_x_forwarded_proto $pass_proto {
+           default $http_x_forwarded_proto;
+           ''      $scheme;
+        }
+        map $http_x_forwarded_port $pass_port {
+           default  $http_x_forwarded_port;
+           ''       $server_port;
+        }
+        map $http_x_forwarded_host $pass_host {
+           default $http_x_forwarded_host;
+           ''      $host;
+        }
+
+        fastcgi_param CONTENT_LENGTH    $content_length;
+        fastcgi_param CONTENT_TYPE      $content_type;
+        fastcgi_param DOCUMENT_ROOT     $document_root;
+        fastcgi_param DOCUMENT_URI      $document_uri;
+        fastcgi_param GATEWAY_INTERFACE CGI/1.1;
+        fastcgi_param HTTPS             $pass_https if_not_empty;
+        fastcgi_param QUERY_STRING      $query_string;
+        fastcgi_param REMOTE_ADDR       $pass_addr;
+        fastcgi_param REMOTE_PORT       $remote_port;
+        fastcgi_param REQUEST_METHOD    $request_method;
+        fastcgi_param REQUEST_SCHEME    $pass_proto;
+        fastcgi_param REQUEST_URI       $request_uri;
+        fastcgi_param SCRIPT_FILENAME   $document_root$fastcgi_script_name;
+        fastcgi_param SCRIPT_NAME       $fastcgi_script_name;
+        fastcgi_param SERVER_ADDR       $server_addr;
+        fastcgi_param SERVER_NAME       $pass_host;
+        fastcgi_param SERVER_PORT       $pass_port;
+        fastcgi_param SERVER_PROTOCOL   $server_protocol;
+        fastcgi_param SERVER_SOFTWARE   nginx/$nginx_version;
+        fastcgi_param REDIRECT_STATUS   200;
+        fastcgi_index index.php;
+
+        server {
+            listen       80;
+            server_name  localhost;
+            root   /usr/share/nginx/html;
+
+            index  index.php index.html index.htm;
+
+            location / {
+                root   /usr/share/nginx/html;
+                index  index.php index.html index.htm;
+                try_files $uri $uri/ /index.php?$query_string;
+            }
+
+            error_page   500 502 503 504  /50x.html;
+            location = /50x.html {
+                root   /usr/share/nginx/html;
+            }
+
+            location ~ \.php$ {
+                root   /usr/share/nginx/html;
+                fastcgi_pass   127.0.0.1:9000;
+            }
+        }
+    }
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: nginx
+  namespace: demo
+spec:
+  type: ClusterIP
+  externalIPs:
+  - 192.168.57.21
+  - 192.168.57.22
+  selector:
+    app: nginx
+  ports:
+  - protocol: TCP
+    port: 8080
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: demo
+  labels:
+    app: nginx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: sergejkurakin/demo-nginx:latest
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-config-volume
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+      - name: php
+        image: sergejkurakin/demo-php:latest
+        env:
+        - name: REDIS_HOST
+          value: "storage-service"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: SECRET_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: somesecret
+              key: username
+        - name: SECRET_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: somesecret
+              key: password
+        ports:
+        - containerPort: 9000
+      volumes:
+        - name: nginx-config-volume
+          configMap:
+            name: nginx-config
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: storage-service
+  namespace: demo
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+  - protocol: TCP
+    port: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: demo
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:alpine
+        ports:
+        - containerPort: 6379
+---
+
